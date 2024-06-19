@@ -77,7 +77,7 @@ def main():
         response = requests.get(f"{emby_url}/Users/{user_id}/Views",
                                 headers={"X-Emby-Token": api_key})
 
-        views = response.json()["Items"]
+        views = response.json().get("Items", [])
 
         for view in views:
             if view['Name'] == library:
@@ -122,6 +122,11 @@ def overlays(library, library_type, items, config_vars):
     else:
         logging.info(f"{library}: Overlays is false in the config.yaml file, removing overlays.")
 
+    # Check if the items list is empty
+    if not items:
+        logging.info(f"No items found in {library}, skipping.")
+        return
+
     # MOVIES
     if library_type == 'movies':
         logging.info(f"Found {len(items)} items in {library}")
@@ -132,7 +137,7 @@ def overlays(library, library_type, items, config_vars):
 
             movie = response2.json()
 
-            if not 'MediaSources' in movie:
+            if 'MediaSources' not in movie:
                 logging.info(f"Movie {item['Name']} has no media sources, skipping.")
                 continue
 
@@ -173,15 +178,15 @@ def overlays(library, library_type, items, config_vars):
             response3 = requests.get(f"{emby_url}/Shows/{tv_show['Id']}/Episodes",
                                      headers={"X-Emby-Token": api_key})
             try:
-                episodes = response3.json()['Items']
-            except (json.JSONDecodeError, requests.exceptions.JSONDecodeError, simplejson.errors.JSONDecodeError):
-                logging.info(f"TV Show {item['Name']} has no episodes, skipping.")
+                episodes = response3.json().get('Items', [])
+                if not episodes:
+                    logging.info(f"TV Show {item['Name']} has no episodes, skipping.")
+                    continue
+            except simplejson.errors.JSONDecodeError:
+                logging.info(f"TV Show {item['Name']} has an invalid response for episodes, skipping.")
                 continue
 
-            if len(episodes) == 0:
-                logging.info(f"TV Show {item['Name']} has no episodes, skipping.")
-                continue
-            episode_id = episodes[0]["Id"]
+            episode_id = episodes[0]["Id"] if episodes else None
 
             if episode_id is None:
                 logging.info(f"TV Show {item['Name']} has no episodes, skipping.")
@@ -192,7 +197,7 @@ def overlays(library, library_type, items, config_vars):
 
             episode = response4.json()
 
-            if not 'MediaSources' in episode:
+            if 'MediaSources' not in episode:
                 logging.info(f"Episode {episode['Name']} has no media sources, skipping.")
                 continue
 
@@ -220,18 +225,25 @@ def get_all_items_library(library):
                                 headers={"X-Emby-Token": api_key},
                                 params={"ParentId": library["parent_id"],
                                         "Recursive": "true"})
-        items_recursive = response.json()["Items"]
-        items = [item for item in items_recursive if not item.get('IsFolder')]
     else:
         response = requests.get(f"{emby_url}/Items",
                                 headers={"X-Emby-Token": api_key},
                                 params={"ParentId": library["parent_id"]})
-        items = response.json()["Items"]
+
+    try:
+        items = response.json().get("Items", [])
+    except simplejson.errors.JSONDecodeError:
+        logging.info(f"Invalid response for library {library}, returning empty items list.")
+        items = []
+
+    if library['collection_type'] == 'movies':
+        items = [item for item in items if not item.get('IsFolder')]
+
     return items
 
 
 def check_tags(file):
-    exists = any(item['Name'] == "custom-overlay" for item in file['TagItems'])
+    exists = any(item['Name'] == "custom-overlay" for item in file.get('TagItems', []))
     return exists
 
 def check_hdr(item):
@@ -248,15 +260,20 @@ def check_hdr(item):
         response2 = requests.get(f"{emby_url}/Shows/{media_file['Id']}/Episodes",
                                  headers={"X-Emby-Token": api_key})
 
-        episodes = response2.json()['Items']
+        episodes = response2.json().get('Items', [])
 
-        episode_id = episodes[0]["Id"]
+        episode_id = episodes[0]["Id"] if episodes else None
+
+        if episode_id is None:
+            logging.info(f"TV Show {item['Name']} has no episodes, skipping.")
+            return '1080p'  # Placeholder for unknown resolution
 
         response3 = requests.get(f"{emby_url}/Users/{user_id}/Items/{episode_id}",
                                  headers={"X-Emby-Token": api_key})
         episode = response3.json()
 
         media_file = episode
+
     path = media_file['MediaSources'][0]['Path']
     if media_file['Width'] >= 2500:
         logging.info(f"Media file: {media_file['Name']}, and path is: {path}")
@@ -292,10 +309,14 @@ def check_audio(item):
         response2 = requests.get(f"{emby_url}/Shows/{media_file['Id']}/Episodes",
                                  headers={"X-Emby-Token": api_key})
 
-        episodes = response2.json()['Items']
+        episodes = response2.json().get('Items', [])
 
         # Get the first episode ID
-        episode_id = episodes[0]["Id"]
+        episode_id = episodes[0]["Id"] if episodes else None
+
+        if episode_id is None:
+            logging.info(f"TV Show {item['Name']} has no episodes, skipping.")
+            return None
 
         response3 = requests.get(f"{emby_url}/Users/{user_id}/Items/{episode_id}",
                                  headers={"X-Emby-Token": api_key})
@@ -321,7 +342,7 @@ def update_tag(movie, item, add, tag):
     if add:
         movie["TagItems"].append(tag)
     else:
-        for tags in movie['TagItems']:
+        for tags in movie.get('TagItems', []):
             if tags['Name'] == "custom-overlay":
                 movie['TagItems'].remove(tags)
                 break
@@ -536,3 +557,4 @@ def remove_overlay(movie_id, item, image_type):
 
 if __name__ == '__main__':
     main()
+    
